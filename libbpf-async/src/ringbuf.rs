@@ -7,6 +7,7 @@ use libbpf_rs::{Map, MapCore};
 use std::io::Result;
 use std::num::NonZeroUsize;
 use std::os::fd::{AsFd, AsRawFd, RawFd};
+use std::ptr::NonNull;
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncRead, ReadBuf};
 
@@ -17,9 +18,9 @@ const BPF_RINGBUF_HDR_SZ: u32 = 8;
 pub struct RingBuffer {
     mask: u64,
     async_fd: AsyncFd<RawFd>,
-    consumer: *mut core::ffi::c_void,
-    producer: *mut core::ffi::c_void,
-    data: *mut core::ffi::c_void,
+    consumer: NonNull<core::ffi::c_void>,
+    producer: NonNull<core::ffi::c_void>,
+    data: NonNull<core::ffi::c_void>,
 }
 
 unsafe impl Send for RingBuffer {}
@@ -54,12 +55,17 @@ impl RingBuffer {
             .unwrap()
         };
 
+        // SAFETY: These pointers come from mmap and are guaranteed to be non-null
+        let consumer = unsafe { NonNull::new_unchecked(consumer) };
+        let producer = unsafe { NonNull::new_unchecked(producer) };
+        let data = unsafe { NonNull::new_unchecked(producer.as_ptr().add(psize)) };
+
         RingBuffer {
             mask: (max_entries - 1) as u64,
             async_fd: AsyncFd::with_interest(fd, tokio::io::Interest::READABLE).unwrap(),
             consumer,
             producer,
-            data: unsafe { producer.add(psize) },
+            data,
         }
     }
 
@@ -75,8 +81,8 @@ impl Drop for RingBuffer {
     fn drop(&mut self) {
         let psize = page_size::get();
         unsafe {
-            let _ = nix::sys::mman::munmap(self.consumer, psize);
-            let _ = nix::sys::mman::munmap(self.producer, psize + 2 * (self.mask as usize + 1));
+            let _ = nix::sys::mman::munmap(self.consumer.as_ptr(), psize);
+            let _ = nix::sys::mman::munmap(self.producer.as_ptr(), psize + 2 * (self.mask as usize + 1));
         }
     }
 }
@@ -89,13 +95,13 @@ impl AsyncRead for RingBuffer {
     ) -> Poll<Result<()>> {
         loop {
             let mut cons_pos =
-                unsafe { std::ptr::read_volatile(self.consumer as *const std::os::raw::c_ulong) };
+                unsafe { std::ptr::read_volatile(self.consumer.as_ptr() as *const std::os::raw::c_ulong) };
             std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
             let prod_pos =
-                unsafe { std::ptr::read_volatile(self.producer as *const std::os::raw::c_ulong) };
+                unsafe { std::ptr::read_volatile(self.producer.as_ptr() as *const std::os::raw::c_ulong) };
             std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
             if cons_pos < prod_pos {
-                let len_ptr = unsafe { self.data.offset((cons_pos & self.mask) as isize) };
+                let len_ptr = unsafe { self.data.as_ptr().offset((cons_pos & self.mask) as isize) };
                 let mut len = unsafe { std::ptr::read_volatile(len_ptr as *const u32) };
                 std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
 
@@ -114,7 +120,7 @@ impl AsyncRead for RingBuffer {
                     std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
                     unsafe {
                         std::ptr::write_volatile(
-                            self.consumer as *mut std::os::raw::c_ulong,
+                            self.consumer.as_ptr() as *mut std::os::raw::c_ulong,
                             cons_pos,
                         )
                     };
