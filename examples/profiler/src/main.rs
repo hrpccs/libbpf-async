@@ -5,11 +5,13 @@
 use chrono::Utc;
 use clap::Parser;
 use libbpf_rs::skel::{OpenSkel, SkelBuilder};
+use libbpf_rs::MapCore;
 use perf_event_open_sys as sys;
 use plain::Plain;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
+use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd};
 use std::process::Command;
 use std::u64;
@@ -19,7 +21,6 @@ mod profiler {
 }
 use profiler::*;
 
-const RINGBUF_NAME: &str = "rb";
 const MAX_FRAME: usize = 32;
 
 #[repr(C)]
@@ -111,9 +112,10 @@ fn main() {
     if args.debug {
         builder.obj_builder.debug(true);
     }
-    let mut skel = builder.open().unwrap().load().unwrap();
-    let prog_fd = skel.obj.prog("do_perf_event").unwrap().as_fd().as_raw_fd();
-    let hmap = skel.obj.map_mut("hmap").unwrap();
+    let mut open_object = MaybeUninit::uninit();
+    let skel = builder.open(&mut open_object).unwrap().load().unwrap();
+    let prog_fd = skel.progs.do_perf_event.as_fd().as_raw_fd();
+    let hmap = skel.maps.hmap;
 
     for cpu in 0..num_cpus::get() {
         let mut attrs = sys::bindings::perf_event_attr {
@@ -209,7 +211,7 @@ fn main() {
     rt.block_on(async move {
         use tokio::io::AsyncReadExt;
 
-        let mut rb = libbpf_async::RingBuffer::new(skel.obj.map(RINGBUF_NAME).unwrap());
+        let mut rb = libbpf_async::RingBuffer::new(&skel.maps.rb);
         loop {
             let mut buf = [0; std::mem::size_of::<Stack>()];
             let n = rb.read(&mut buf).await.unwrap();

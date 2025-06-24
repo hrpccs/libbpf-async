@@ -6,7 +6,7 @@ use chrono::prelude::*;
 use libbpf_rs::skel::{OpenSkel, SkelBuilder};
 use object::{Object, ObjectSymbol};
 use plain::Plain;
-use std::fs;
+use std::{fs, mem::MaybeUninit};
 use tokio::io::AsyncReadExt;
 
 mod bashreadline {
@@ -16,7 +16,6 @@ use bashreadline::*;
 
 const BINARY_NAME: &str = "/bin/bash";
 const SYM_NAME: &str = "readline";
-const RINGBUF_NAME: &str = "rb";
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -49,7 +48,8 @@ async fn main() {
 
     let mut builder = BashreadlineSkelBuilder::default();
     builder.obj_builder.debug(true);
-    let mut skel = builder.open().unwrap().load().unwrap();
+    let mut open_object = MaybeUninit::uninit();
+    let skel = builder.open(&mut open_object).unwrap().load().unwrap();
 
     let bin_data = fs::read(BINARY_NAME).unwrap();
     let obj_file = object::File::parse(&*bin_data).unwrap();
@@ -62,13 +62,11 @@ async fn main() {
     assert_ne!(offset, 0);
 
     let _link = skel
-        .obj
-        .prog_mut("printret")
-        .unwrap()
+        .progs.printret
         .attach_uprobe(true, -1, BINARY_NAME, offset as usize)
         .unwrap();
 
-    let mut rb = libbpf_async::RingBuffer::new(skel.obj.map(RINGBUF_NAME).unwrap());
+    let mut rb = libbpf_async::RingBuffer::new(&skel.maps.rb);
     println!("TIME      PID    COMMAND");
     loop {
         let mut buf = [0; 128];

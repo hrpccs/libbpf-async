@@ -3,7 +3,7 @@
 // Licensed under LGPL-2.1 or BSD-2-Clause.
 
 use core::task::{Context, Poll};
-use libbpf_rs::{query::MapInfoIter, Map};
+use libbpf_rs::{Map, MapCore};
 use std::io::Result;
 use std::num::NonZeroUsize;
 use std::os::fd::{AsFd, AsRawFd, RawFd};
@@ -24,14 +24,7 @@ pub struct RingBuffer {
 
 impl RingBuffer {
     pub fn new(map: &Map) -> Self {
-        let mut max_entries = 0;
-        for m in MapInfoIter::default() {
-            if let Ok(name) = m.name.to_str() {
-                if name == map.name() {
-                    max_entries = m.max_entries;
-                }
-            }
-        }
+        let max_entries = map.max_entries();
         let psize = page_size::get();
         let fd = map.as_fd().as_raw_fd();
         let consumer = unsafe {
