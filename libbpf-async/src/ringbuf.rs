@@ -22,6 +22,9 @@ pub struct RingBuffer {
     data: *mut core::ffi::c_void,
 }
 
+unsafe impl Send for RingBuffer {}
+unsafe impl Sync for RingBuffer {}
+
 impl RingBuffer {
     pub fn new(map: &Map) -> Self {
         let max_entries = map.max_entries();
