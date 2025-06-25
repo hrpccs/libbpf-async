@@ -83,7 +83,7 @@ impl SyncRingBuffer {
             producer: self.producer,
             data: self.data,
             // Don't drop the original SyncRingBuffer fields
-            _sync_rb: None,
+            _sync_rb: Some(self)
         })
     }
 }
@@ -148,17 +148,17 @@ impl AsyncRead for RingBuffer {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<Result<()>> {
+        let mut cons_pos =
+            unsafe { std::ptr::read_volatile(self.consumer.as_ptr() as *const std::os::raw::c_ulong) };
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
         loop {
-            let mut cons_pos =
-                unsafe { std::ptr::read_volatile(self.consumer.as_ptr() as *const std::os::raw::c_ulong) };
-            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
             let prod_pos =
                 unsafe { std::ptr::read_volatile(self.producer.as_ptr() as *const std::os::raw::c_ulong) };
-            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
             if cons_pos < prod_pos {
                 let len_ptr = unsafe { self.data.as_ptr().offset((cons_pos & self.mask) as isize) };
                 let mut len = unsafe { std::ptr::read_volatile(len_ptr as *const u32) };
-                std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+                std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
 
                 if (len & BPF_RINGBUF_BUSY_BIT) == 0 {
                     cons_pos += roundup_len(len) as u64;
@@ -172,7 +172,7 @@ impl AsyncRead for RingBuffer {
                         len = std::cmp::min(len, buf.capacity() as u32);
                         buf.put_slice(&sample[..len as usize]);
                     }
-                    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                     unsafe {
                         std::ptr::write_volatile(
                             self.consumer.as_ptr() as *mut std::os::raw::c_ulong,
